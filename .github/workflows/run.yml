@@ -1,0 +1,73 @@
+name: run
+on:
+  workflow_dispatch:
+    inputs:
+      kind:   {description: job kind, default: rr}
+      pool:   {description: pool name, default: pool}
+      seats:  {description: seats, default: '6'}
+      first:  {description: first shard id, default: '0'}
+      shards: {description: number of shards (max 20), default: '4'}
+      hands:  {description: hands per match, default: '400'}
+      tag:    {description: output tag, required: true}
+permissions:
+  contents: read
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      ids: ${{ steps.m.outputs.ids }}
+    steps:
+      - id: m
+        env: {FIRST: '${{ inputs.first }}', N: '${{ inputs.shards }}'}
+        run: echo "ids=$(python3 -c 'import json,os;f=int(os.environ["FIRST"]);n=min(int(os.environ["N"]),20);print(json.dumps(list(range(f,f+n))))')" >> "$GITHUB_OUTPUT"
+  run:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        r: ${{ fromJson(needs.plan.outputs.ids) }}
+    steps:
+      - name: fetch
+        env:
+          SRC_KEY: ${{ secrets.SRC_KEY }}
+          ASSETS_KEY: ${{ secrets.ASSETS_KEY }}
+          SRC_REPO: ${{ secrets.SRC_REPO }}
+          ASSETS_REPO: ${{ secrets.ASSETS_REPO }}
+        run: |
+          mkdir -p ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          printf '%s\n' "$SRC_KEY" > ~/.ssh/k1 && printf '%s\n' "$ASSETS_KEY" > ~/.ssh/k2 && chmod 600 ~/.ssh/k1 ~/.ssh/k2
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/k1 -o IdentitiesOnly=yes" git clone -q --depth 1 "$SRC_REPO" src
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/k2 -o IdentitiesOnly=yes" git clone -q --depth 1 "$ASSETS_REPO" assets
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.10'}
+      - name: deps
+        run: |
+          pip install -q "Cython<3" setuptools wheel > /dev/null 2>&1
+          pip install -q --no-build-isolation eval7==0.1.7 > /dev/null 2>&1
+          pip install -q numpy==1.26.4 scipy==1.13.0 treys==0.1.8 scikit-learn==1.5.2 pydantic > /dev/null 2>&1
+      - name: work
+        env:
+          KIND: ${{ inputs.kind }}
+          POOL: ${{ inputs.pool }}
+          SEATS: ${{ inputs.seats }}
+          HANDS: ${{ inputs.hands }}
+          TAG: ${{ inputs.tag }}
+          ROUND: ${{ matrix.r }}
+        run: cd assets && bash run_shard.sh > /dev/null 2>&1 && echo ok
+      - name: save
+        if: always()
+        env: {TAG: '${{ inputs.tag }}', ROUND: '${{ matrix.r }}'}
+        run: |
+          cd assets
+          git config user.name ci && git config user.email ci@users.noreply.github.com
+          git add -A results > /dev/null 2>&1 || true
+          git commit -q -m "result $TAG $ROUND" > /dev/null 2>&1 || exit 0
+          for i in 1 2 3 4 5 6 7 8; do
+            GIT_SSH_COMMAND="ssh -i ~/.ssh/k2 -o IdentitiesOnly=yes" git pull -q --rebase > /dev/null 2>&1 && \
+            GIT_SSH_COMMAND="ssh -i ~/.ssh/k2 -o IdentitiesOnly=yes" git push -q > /dev/null 2>&1 && break
+            sleep $((RANDOM % 20 + 5))
+          done
+          rm -f ~/.ssh/k1 ~/.ssh/k2
