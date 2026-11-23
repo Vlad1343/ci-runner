@@ -9,6 +9,7 @@ on:
       shards: {description: number of shards (max 20), default: '4'}
       hands:  {description: hands per match, default: '400'}
       tag:    {description: output tag, required: true}
+      ref:    {description: source branch, default: work}
 permissions:
   contents: read
 jobs:
@@ -36,10 +37,11 @@ jobs:
           ASSETS_KEY: ${{ secrets.ASSETS_KEY }}
           SRC_REPO: ${{ secrets.SRC_REPO }}
           ASSETS_REPO: ${{ secrets.ASSETS_REPO }}
+          REF: ${{ inputs.ref }}
         run: |
           mkdir -p ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
           printf '%s\n' "$SRC_KEY" > ~/.ssh/k1 && printf '%s\n' "$ASSETS_KEY" > ~/.ssh/k2 && chmod 600 ~/.ssh/k1 ~/.ssh/k2
-          GIT_SSH_COMMAND="ssh -i ~/.ssh/k1 -o IdentitiesOnly=yes" git clone -q --depth 1 "$SRC_REPO" src
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/k1 -o IdentitiesOnly=yes" git clone -q --depth 1 -b "$REF" "$SRC_REPO" src
           GIT_SSH_COMMAND="ssh -i ~/.ssh/k2 -o IdentitiesOnly=yes" git clone -q --depth 1 "$ASSETS_REPO" assets
       - uses: actions/setup-python@v5
         with: {python-version: '3.10'}
